@@ -251,3 +251,125 @@ vLLM 的 3 个关键设计
 
 你下一条消息直接说一句即可：
 👉 **“进入 Day 4：vLLM 实战”**
+
+# day4
+
+pip install vllm
+
+python -c "import vllm; print(vllm.__version__)"
+
+```
+from vllm import LLM, SamplingParams
+
+llm = LLM(
+    model="gpt2",
+    trust_remote_code=True
+)
+
+sampling_params = SamplingParams(
+    temperature=0.0,
+    max_tokens=32
+)
+
+outputs = llm.generate(
+    ["The factory production line optimization requires"],
+    sampling_params
+)
+
+for o in outputs:
+    print(o.outputs[0].text)
+
+```
+
+##  HuggingFace 并发推理（Baseline）
+
+> 注意：HF 默认是 **“每个请求一个 forward”**
+
+```python
+import time
+import threading
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM
+
+model = AutoModelForCausalLM.from_pretrained("gpt2")
+tokenizer = AutoTokenizer.from_pretrained("gpt2")
+model.eval()
+
+def hf_infer(text):
+    inputs = tokenizer(text, return_tensors="pt")
+    with torch.no_grad():
+        model.generate(**inputs, max_new_tokens=32)
+
+texts = ["The factory production line optimization requires"] * 4
+
+t0 = time.time()
+threads = []
+
+for t in texts:
+    th = threading.Thread(target=hf_infer, args=(t,))
+    th.start()
+    threads.append(th)
+
+for th in threads:
+    th.join()
+
+print("HF total time:", time.time() - t0)
+
+```
+
+​                        
+
+ ## vLLM 并发推理
+
+```java
+from vllm import LLM, SamplingParams
+import time
+
+llm = LLM(model="gpt2")
+sampling_params = SamplingParams(max_tokens=32)
+
+prompts = ["The factory production line optimization requires"] * 4
+
+t0 = time.time()
+llm.generate(prompts, sampling_params)
+print("vLLM total time:", time.time() - t0)
+
+```
+
+- 并发数越大
+- vLLM 相对 HF 越有优势
+- GPU 利用率明显更高（如果你有 GPU）
+
+👉 **这是 Continuous Batching + PagedAttention 的直接体现**
+
+## 理解 vLLM 在“悄悄”做什么
+
+```
+llm.generate(prompts, sampling_params)
+```
+
+vLLM 内部做了：
+
+1. 请求进入队列
+2. 动态合并 Prefill
+3. Decode 阶段交错执行
+4. KV Cache 分页管理
+5. GPU 利用率最大化
+
+👉 **你后面自己写推理服务，本质就是“做一个简化版 vLLM”**
+
+
+
+## vLLM vs HuggingFace 推理对比
+
+- HuggingFace 默认按请求逐个执行推理，难以充分利用 GPU
+- vLLM 通过 Continuous Batching 合并 Prefill 阶段，提高吞吐
+- vLLM 使用 PagedAttention 管理 KV Cache，提升显存利用率和并发能力
+
+如果面试官问你：
+
+> **“为什么生产环境更倾向用 vLLM？”**
+
+你可以这样答：
+
+> vLLM 在推理阶段通过 Continuous Batching 合并多个请求的 Prefill 计算，同时使用 PagedAttention 对 KV Cache 进行分页管理，在相同硬件条件下显著提升 GPU 利用率和并发能力，因此更适合生产环境的大模型推理服务。
