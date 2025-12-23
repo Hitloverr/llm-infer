@@ -44,3 +44,210 @@ Prompt (T tokens)
 
 > KV Cache 并不是通过 input\_ids 传递历史上下文，而是通过 past\_key\_values 显式传入历史 token 的 Key/Value。
 > 如果不传 past\_key\_values，即使每次只输入一个 token，模型也会把它当成一个新的序列，从而失去上下文并重复计算。
+
+# day3
+
+太好了 👍
+**Day 3 是你从“懂原理”→“像推理工程师一样思考”的关键一天**。
+今天我们把 **KV Cache = 显存 = 调度 = vLLM** 这条线一次性串起来。
+
+# 
+
+> **你能算清 KV Cache 吃多少显存，并解释 vLLM 为什么要做 PagedAttention**
+
+# 
+
+在推理系统里：
+
+```
+显存 = 模型参数
+     + 激活值（很少）
+     + KV Cache（最大头）
+```
+
+👉 **推理显存的“真正大头”，不是模型参数，而是 KV Cache。**
+
+
+
+## 二、KV Cache 到底存了什么？（精确定义）
+
+
+
+对 **Decoder-only Transformer**：
+
+- 每一层
+- 每一个 token
+- 都要存一份：
+  - Key
+  - Value
+
+
+
+**KV Cache 的 shape**
+
+以常见 LLM 为例：
+
+```
+K, V:
+[batch_size,
+ num_heads,
+ seq_len,
+ head_dim]
+```
+
+并且：
+
+```
+hidden_size = num_heads × head_dim
+```
+
+三、显存到底怎么算？（核心公式）
+
+我们直接上 **工程可用公式** 👇
+
+
+
+单个 token 的 KV Cache 显存
+
+```
+per_token_kv =
+  num_layers × 2(K,V) × hidden_size × bytes_per_param
+```
+
+
+
+一个请求的 KV Cache 显存
+
+```
+request_kv =
+  num_layers × 2 × hidden_size × seq_len × bytes
+```
+
+
+
+用一个“真实模型”代入（你感受一下）
+
+以 **LLaMA-7B**（近似）：
+
+- num_layers = 32
+- hidden_size = 4096
+- FP16 → 2 bytes
+
+👉 **每个 token 的 KV Cache：**
+
+```
+32 × 2 × 4096 × 2 bytes
+≈ 524 KB / token
+```
+
+❗️这意味着什么？
+
+- 1k tokens ≈ **512 MB**
+- 10 个并发请求 × 1k tokens ≈ **5 GB**
+- 多轮对话 = seq_len 持续增长
+
+👉 **显存线性爆炸**
+
+## 四、为什么这在工程上是“致命的”？（痛点）
+
+传统做法（HF / 原生）：
+
+- 每个请求
+  - 连续分配一大块 KV Cache
+- 请求结束才释放
+
+### 问题 1：显存碎片
+
+- 长对话 + 短对话混在一起
+- 无法复用
+
+### 问题 2：并发受限
+
+- 显存被“占死”
+- 新请求进不来
+
+
+
+## 五、vLLM 的核心思想：PagedAttention（终于登场）
+
+> **不要一次性给一个请求分配连续的大块 KV Cache**
+
+👉 **像操作系统管理内存一样，分页管理 KV Cache**
+
+vLLM 的 3 个关键设计
+
+### 1️⃣ KV Cache 分页（Block）
+
+- KV Cache 被切成固定大小的 **Block**
+- 每个 Block 存多个 token
+
+```
+[Block][Block][Block][Block]
+```
+
+------
+
+### 2️⃣ 逻辑连续，物理不连续
+
+- 对模型来说：
+  - token 是连续的
+- 对显存来说：
+  - block 可以分散在任意位置
+
+👉 **解决碎片问题**
+
+------
+
+### 3️⃣ Block 可复用
+
+- 请求结束
+- Block 立即回收
+- 给下一个请求用
+
+👉 **显存利用率暴涨**
+
+
+
+## 六、PagedAttention “工程价值总结”（你要会讲）
+
+你在面试时可以这样说：
+
+> vLLM 通过将 KV Cache 分页管理，使得不同请求的 KV Cache 可以非连续地分配在显存中，避免了传统推理框架中由于长短请求混合导致的显存碎片问题，从而显著提升了 GPU 显存利用率和并发能力。
+
+## 七、把 Day 3 的结论写进你的项目文档（必须）
+
+
+
+```markdown
+## KV Cache 与显存问题
+
+- KV Cache 是推理阶段显存的主要消耗来源
+- 显存占用与层数、隐藏维度、序列长度线性相关
+- 传统连续内存分配方式容易造成显存碎片
+- vLLM 通过 PagedAttention 对 KV Cache 分页管理，显著提升并发能力
+```
+
+## 八、Day 3 面试级自检（非常重要）
+
+如果面试官问你：
+
+> **“为什么 vLLM 能支持更高并发？”**
+
+你现在可以答：
+
+> 因为 vLLM 对 KV Cache 进行分页管理，避免了连续内存分配带来的碎片问题，使得显存可以被不同请求高效复用，从而在相同显存条件下支持更多并发请求。
+
+
+
+## 九、下一步：你正式进入“vLLM 工程世界”
+
+**Day 4 你会做的事：**
+
+- 跑 vLLM
+- 对比 HF vs vLLM
+- 亲眼看到并发差异
+
+------
+
+你下一条消息直接说一句即可：
+👉 **“进入 Day 4：vLLM 实战”**
